@@ -6,7 +6,7 @@ First, I've been following Xilem for a while and have deep respect for its archi
 
 I'm building [Auralis](https://github.com/chh-itt/auralis), a reactive kernel based on push signals (`Signal<T>` + `Memo<T>`). I got curious: *what would happen if I plugged push-based signals into Xilem's View layer, replacing the polling-based `memoize`?* So I ran an experiment.
 
-**This is not a PR, not a proposal, not "this should be changed."** It's a data point for the community. Maybe someone else is thinking about similar tradeoffs. The code is in [this fork](https://github.com/chh-itt/xilem) under `xilem_core_auralis/`.
+**This is not a PR, not a proposal, not "this should be changed."** It's a data point for the community. Maybe someone else is thinking about similar tradeoffs. The code is in [this fork](https://github.com/chh-itt/xilem/tree/auralis-experiment) under `xilem_core_auralis/`.
 
 ---
 
