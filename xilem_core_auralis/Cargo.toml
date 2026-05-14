@@ -1,0 +1,29 @@
+[package]
+name = "xilem_core_auralis"
+version = "0.1.0"
+edition = "2021"
+description = "Auralis signal-based reactive views — drop-in enhancement for xilem_core"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+xilem_core.workspace = true
+auralis-signal = { path = "../../auralis/crates/auralis-signal" }
+
+[dev-dependencies]
+xilem = { path = "../xilem" }
+xilem_masonry = { path = "../xilem_masonry" }
+masonry = { path = "../masonry" }
+winit = "0.30"
+
+[[example]]
+name = "live_comparison"
+
+[[example]]
+name = "bench"
+
+
+[[example]]
+name = "bench_memory"
+
+[lints]
+workspace = true

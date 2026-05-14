@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "xilem",
     "xilem_core",
+    "xilem_core_auralis",
     "xilem_masonry",
     "masonry",
     "masonry_core",
@@ -49,6 +50,7 @@ masonry_imaging = { version = "0.4.0", path = "masonry_imaging", default-feature
 masonry_testing = { version = "0.4.0", path = "masonry_testing", default-features = false }
 masonry_winit = { version = "0.4.0", path = "masonry_winit", default-features = false }
 xilem_core = { version = "0.4.0", path = "xilem_core" }
+xilem_core_auralis = { version = "0.1.0", path = "xilem_core_auralis" }
 xilem_masonry = { version = "0.4.0", path = "xilem_masonry" }
 xilem = { version = "0.4.0", path = "xilem", default-features = false }
 tree_arena = { version = "0.2.0", path = "tree_arena" }
