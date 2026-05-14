@@ -23,6 +23,9 @@ name = "bench"
 
 
 [[example]]
+name = "bench_arc"
+
+[[example]]
 name = "bench_memory"
 
 [lints]

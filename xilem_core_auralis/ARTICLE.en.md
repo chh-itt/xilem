@@ -1,297 +1,193 @@
-# Replacing Xilem's Reactive Layer with Auralis: An Experiment
+# Three Ways to Detect Change in Xilem: A Comparative Experiment
 
-## Before We Begin
+I wanted to understand how different reactive models play out inside the same GUI framework. So I built `xilem_core_auralis` — a crate that adds push-signal change detection to Xilem's `View::rebuild` path — and ran the numbers. This is what I found.
 
-First, I've been following Xilem for a while and have deep respect for its architecture — the clean layering, the Masonry widget foundation, the Elm-inspired message routing. It's one of the most thoughtfully designed Rust GUI projects.
-
-I'm building [Auralis](https://github.com/chh-itt/auralis), a reactive kernel based on push signals (`Signal<T>` + `Memo<T>`). I got curious: *what would happen if I plugged push-based signals into Xilem's View layer, replacing the polling-based `memoize`?* So I ran an experiment.
-
-**This is not a PR, not a proposal, not "this should be changed."** It's a data point for the community. Maybe someone else is thinking about similar tradeoffs. The code is in [this fork](https://github.com/chh-itt/xilem/tree/auralis-experiment) under `xilem_core_auralis/`.
+The code is in [this fork](https://github.com/chh-itt/xilem/tree/auralis-experiment) under `xilem_core_auralis/`.
 
 ---
 
-## The Two Reactive Models
+## 1. How Xilem Handles Change Detection Today
 
-### Xilem: Polling Reconciliation
+Xilem's view tree is event-driven: `app_logic` runs when a user action changes state, and `rebuild()` compares the new View tree against the previous one. For deciding *which parts of the tree actually need updating*, Xilem provides three strategies:
 
-```
-Every frame → app_logic() → rebuild View tree → memoize checks prev ≠ self → diff → update widget
-```
+| Strategy | How it detects change | Complexity | Who does the work? |
+|----------|----------------------|------------|-------------------|
+| `memoize(data, fn)` | `Data: PartialEq` | O(n) | Framework |
+| `Arc<impl View>` | `Arc::ptr_eq` | O(1) | **Developer** |
+| `frozen(fn)` | Nothing (dirty flag only) | O(1) | Framework |
 
-- Every item is checked every frame, regardless of whether it changed.
-- Uses `Data: PartialEq` to detect changes.
-- Views are ephemeral, recreated each frame.
+`frozen` is for views that never depend on external state — build once, never rebuild unless a child requests it. It's the simplest case and not our focus here.
 
-### Auralis: Push Signals
+The interesting contrast is between the two general-purpose strategies:
 
-```
-signal.set() → version increments → subscribers notified → Memo recomputes → effect fires
-```
+**`memoize`** is automatic. The framework compares the old and new data each time `rebuild` runs. The cost is `Data: PartialEq` — trivial for integers, acceptable for short strings, painful for large collections.
 
-- Changes propagate only when they happen, targeting exactly the right signal.
-- Uses O(1) version comparison — no `PartialEq` needed.
-- Signals are persistent across frames.
-
-### Feature Comparison Across Paradigms
-
-Different paradigms naturally lead to different feature sets. A polling model doesn't need subscriptions; a push model doesn't need per-frame diffing. Neither is "missing" anything — they just solve the problem differently.
-
-|  | xilem_core | auralis-signal |
-|------|-----------|---------------|
-| Change detection | `PartialEq` per frame | Signal version (O(1)) |
-| Auto dependency tracking | — | `Memo<T>` |
-| Async task management | — (external: Tokio, etc.) | `TaskScope` |
-| Side-effect management | — (manual) | `watch_effect` |
-| Cooperative timer | — (external) | `timer::sleep` |
-| Batch updates | — | `batch()` |
-
-"—" means the paradigm doesn't require it, not that it's "missing."
-
----
-
-## Code Size: 3.1× Smaller
-
-| | auralis-signal | xilem_core |
-|------|---------------|------------|
-| Implementation | **1,779 lines** | 5,467 lines |
-| Tests | 1,832 lines | 2,056 lines |
-| **Total** | **3,611 lines** | **7,523 lines** |
-
-`auralis-signal` fits in 6 source files. The entire reactive layer can be read in one sitting.
-
----
-
-## Compile Time & Dependencies: Zero vs. Six
-
-| | auralis-signal | xilem_core |
-|------|---------------|------------|
-| Direct dependencies | **0** | 4 |
-| Transitive dependencies | **0** | 6 |
-| Dependency tree depth | 1 | 3 |
-| Clean build (dev) | **0.30s** | 1.09s |
-
-```
-auralis-signal:            xilem_core:
-    (nothing)                  ├── anymore
-                               ├── hashbrown
-                               │   └── foldhash
-                               └── tracing
-                                   ├── pin-project-lite
-                                   └── tracing-core
-```
-
----
-
-## Performance: Raw Comparison Cost
-
-The only difference in `View::rebuild` between the two approaches is the "has it changed?" check. Everything else (trait dispatch, context passing, inner view rebuild) is identical.
-
-### On the Fairness of This Benchmark
-
-PartialEq on identical large strings represents the worst case for polling. However, in GUI applications, the vast majority of frames have no changes at all — making the worst case also the most common path. For data that *has* changed, PartialEq short-circuits on the first differing element, narrowing the gap considerably. The O(1) version check still holds an advantage, but the practical takeaway is not about raw speed — it's about eliminating the `PartialEq` constraint entirely.
-
-```
-2M iterations, release build, data unchanged (the typical frame path)
-
-Data type            | memoize (PartialEq) | state_memoize (u64) | Ratio
----------------------|--------------------|--------------------|------
-i32                  |   993µs           |   971µs           |   1×
-String 16B           |  4.02ms           |   983µs           |   4×
-String 64B           |  7.90ms           |   989µs           |   8×
-String 1KB           |  37.1ms           |   883µs           |  42×
-String 12KB          |   442ms           |  1.49ms           | 297×
-Vec<String> 100 items |   447ms           |   989µs           | 452×
-Vec<String> 1000 items | **5.54s**        |   969µs           | **5713×**
-```
-
-The important caveat: in real GUI applications, widget rendering dominates frame time. The comparison cost difference is rarely the bottleneck. The value of O(1) version checking is not raw FPS — it's the elimination of the `PartialEq` constraint and the architectural simplicity it enables.
-
-**Run:** `cargo run --example bench -p xilem_core_auralis --release`
-
----
-
-## Memory: Zero Per-Frame Allocation vs. Per-Frame Clone
-
-| Approach | View Size | Data Location | Per-frame Allocation |
-|----------|----------|---------------|---------------------|
-| `memoize<i32>` | 4 B | Inline in View | 0 |
-| `memoize<String>` | 24 B | Inline in View | **Clone String (heap)** |
-| `state_memoize` | 0–16 B | AppState (persistent) | 0 |
-| `signal_state_memoize` | 0 B | Signal in AppState | 0 |
-
-The real difference is not total memory — it's allocation pressure per frame:
-
-```
-1,000 String items × 60 fps:
-
-memoize:      1,000 String::clone() calls per frame → 60,000 heap allocations per second
-state_memoize: 0 allocations per frame (data lives in AppState)
-signal_state:  0 allocations per frame + automatic version tracking
-```
-
-Non-capturing closures are ZSTs (zero-sized types) — Rust eliminates them entirely at compile time.
-
-**Run:** `cargo run --example bench_memory -p xilem_core_auralis --release`
-
----
-
-## Design Tradeoffs Discovered
-
-### Signal<T> is !Send + !Sync — and AppState saved us
-
-`Signal<T>` uses `Rc<RefCell<>>` internally — by design, it's single-threaded. Xilem's `WidgetView` requires `View + Send + Sync`.
-
-The workaround turned out to be surprisingly clean: store the `Signal` in `AppState` and use function pointers in the View to access it. `State` in `View<State, Action, Context>` only requires `'static` — no `Send` or `Sync`. Function pointers, meanwhile, are always `Send + Sync`.
+**`Arc<impl View>`** is fast. Comparison is a single `Arc::ptr_eq` — one pointer comparison. But the developer carries the burden: cache the `Arc` in `AppState`, manually decide when to create a new one, clone or replace as needed.
 
 ```rust
-// Signal lives in AppState: !Send + !Sync is fine here
-struct AppState {
-    count: Signal<i32>,
+// Arc<impl View> — developer manages the lifecycle:
+fn increase_button(state: &mut AppState) -> Arc<AnyWidgetView<AppState>> {
+    if state.count == state.cached_count   // ← developer writes this
+        && let Some(view) = &state.cached_view
+    {
+        view.clone()                       // same Arc → ptr_eq → skip
+    } else {
+        let view = Arc::new(text_button(...));
+        state.cached_count = state.count;  // ← developer writes this
+        state.cached_view = Some(view.clone());
+        view                               // new Arc → rebuild
+    }
 }
-
-// View stores only fn pointers: always Send + Sync
-signal_state_memoize(
-    |s: &AppState| s.count.clone(),   // fn pointer
-    |count: &Signal<i32>| { ... },    // fn pointer
-)
 ```
-
-This constraint also turned out to be a useful forcing function: it pushed us toward a cleaner separation of "persistent reactive state" (AppState) from "transient view descriptions" (the View tree). The right design emerged from respecting the constraint, not fighting it.
 
 ---
 
-## Compatibility: All Existing Tests Pass
+## 2. What a Push-Signal Model Adds
 
-| Test Suite | Passed | Failed |
-|-----------|--------|--------|
-| xilem_core (52 tests) | **52** | 0 |
-| xilem_core_auralis (8 tests) | **8** | 0 |
+Auralis's approach is to give each piece of data a monotonic version number. `Signal::set()` increments it. The framework compares versions instead of values. This sits between the two existing strategies: automatic like `memoize`, O(1) like `Arc<impl View>`.
 
-Notably, xilem_core has no tests for `memoize` behavior. Our `tests/comparison.rs` provides the only memoize coverage in the ecosystem.
-
----
-
-## API Comparison
-
-### xilem_core::memoize (original)
+I built two variants:
 
 ```rust
-memoize(state.count, |count| {
-    label(format!("Count: {count}"))
-})
-// Requires Data: PartialEq
-// Data cloned from AppState into Memoize struct every frame
-```
-
-### Auralis state_memoize (manual version tracking)
-
-```rust
+// state_memoize — version managed manually, via Cell<u64>:
 state_memoize(
     |s: &AppState| s.count,
-    |s: &AppState| s.version.get(),  // Cell<u64>
+    |s: &AppState| s.version.get(),
     |count: &i32| label(format!("Count: {count}")),
 )
-// No PartialEq needed
-// Data lives in AppState, View stores only fn pointers
-```
+// User bumps version: s.version.set(s.version.get() + 1)
 
-### Auralis signal_state_memoize (automatic tracking) ★
-
-```rust
-struct AppState {
-    count: Signal<i32>,  // auto-incrementing version
-}
+// signal_state_memoize — version managed automatically, via Signal<T>:
+struct AppState { count: Signal<i32> }
 
 signal_state_memoize(
     |s: &AppState| s.count.clone(),
     |count: &Signal<i32>| label(format!("Count: {}", count.read())),
 )
-// Signal::set() → version auto-increments
-// Zero manual bookkeeping
+// Signal::set() bumps version automatically
+```
+
+Both are `Send + Sync` compatible — the `Signal` lives in `AppState` (which has no threading constraint), and the View stores only function pointers.
+
+---
+
+## 3. The Core Tradeoff: Who Decides "Changed"?
+
+The raw comparison costs set the stage:
+
+```
+2M checks, release build
+
+Strategy                              | Per check | Complexity
+--------------------------------------|-----------|-----------
+Arc::ptr_eq (same Arc)                |   1.3ns   | O(1)
+Signal::version (unchanged)           |   1.1ns   | O(1)
+memoize PartialEq — i32               |   0.5ns   | O(1)
+memoize PartialEq — String 16B        |   2.0ns   | O(n)
+memoize PartialEq — String 12KB       |   221ns   | O(n)
+memoize PartialEq — Vec<String> 1000  |  2770ns   | O(n)
+```
+
+For small `Copy` types like `i32`, all three strategies are equivalent — `PartialEq` on an integer is just one integer comparison. The 0.5ns vs 1.3ns difference is noise; both are ~1ns. The gap only opens when data grows beyond a single register: strings, vectors, collections.
+
+`Arc::ptr_eq` and `Signal::version()` stay at one integer comparison regardless of data size. `memoize`'s `PartialEq` scales with the data. The difference is not in the instruction count. It's in the API surface:
+
+| | memoize | Arc\<impl View\> | signal_state_memoize |
+|------|---------|---------------------|---------------------|
+| Detection | `PartialEq` (O(n)) | `Arc::ptr_eq` (O(1)) | `version()` (O(1)) |
+| Who decides? | Framework | Developer | Framework |
+| Developer writes... | Nothing | Manual comparison + cache logic | Nothing |
+| PartialEq required | Yes | No | No |
+| Per-rebuild allocation | Clone data | `Arc::clone` (refcount) | 0 |
+
+`memoize` gives you automation at the cost of `PartialEq`. `Arc<impl View>` gives you speed at the cost of manual bookkeeping. `signal_state_memoize` gives you automation and speed — the framework handles version tracking, the developer just calls `signal.set()`.
+
+---
+
+## 4. The "Smaller" Side of the Story
+
+Code size, dependencies, and compile time — the engineering overhead of each reactive layer:
+
+| | auralis-signal | xilem_core |
+|------|---------------|------------|
+| Implementation | **1,779 lines** | 5,467 lines |
+| Dependencies | **0** | 4 (6 transitive) |
+| Clean build | **0.30s** | 1.09s |
+
+`auralis-signal` is 6 files. Zero dependencies means zero dependency conflicts, zero supply-chain surface, and instant compilation in any project.
+
+```
+auralis-signal:            xilem_core:
+    (nothing)                  ├── anymore
+                               ├── hashbrown → foldhash
+                               └── tracing  → tracing-core → pin-project-lite
 ```
 
 ---
 
-## GUI Demo
+## 5. Memory: Where Does the Data Live?
 
-A real Masonry widget comparison running both approaches side by side:
+| Approach | View struct size | Data location | Allocation per rebuild |
+|----------|-----------------|---------------|----------------------|
+| `memoize<i32>` | 4 B | Inline | 0 |
+| `memoize<String>` | 24 B | Inline | Clone String (heap) |
+| `Arc<impl View>` | 8 B | Arc in AppState | Arc::clone (refcount) |
+| `state_memoize` | 0–16 B | AppState | 0 |
+| `signal_state_memoize` | 0 B | Signal in AppState | 0 |
+
+The pattern is consistent: `memoize` copies data into the View struct; the other strategies reference persistent data in AppState. Non-capturing closures are zero-sized — Rust eliminates them at compile time.
+
+---
+
+## 6. A Constraint That Became a Feature
+
+`Signal<T>` is `!Send + !Sync` by design — it uses `Rc<RefCell<>>` internally. Xilem's `WidgetView` requires `Send + Sync`.
+
+The fix: put the `Signal` in `AppState`. `State` in `View<State, Action, Context>` only requires `'static` — no threading bounds. The View stores function pointers (always `Send + Sync`) that extract the Signal during `build`/`rebuild`.
+
+This constraint forced a clean separation: persistent reactive state lives in AppState; transient view descriptions live in the View tree. The design fell out naturally from respecting the boundary rather than fighting it.
+
+---
+
+## 7. Compatibility
+
+All 52 `xilem_core` tests pass unchanged. We added 8 tests for `memoize`/`signal_memoize` behavior — xilem_core currently has no memoize-specific tests.
 
 ```
-cargo run --example live_comparison -p xilem_core_auralis --release
+cargo test -p xilem_core          # 52 passed
+cargo test -p xilem_core_auralis  # 8 passed
 ```
 
 ---
 
-## Comparison Table
+## 8. Limitations
 
-⚠️ **This is not a competition scoreboard. It's a map of engineering tradeoffs between two reactive paradigms in the same GUI scenario.**
-
-| Dimension | memoize | state_memoize | signal_state_memoize |
-|-----------|---------|---------------|---------------------|
-| Detection method | PartialEq | u64 version | u64 version (auto) |
-| Requires PartialEq | ✅ required | ❌ | ❌ |
-| Check complexity | O(n) | O(1) | O(1) |
-| WidgetView compatible | ✅ | ✅ | ✅ |
-| Manual bookkeeping | None | Cell\<u64\> | ✅ automatic |
-| View size (i32) | 4 B | 0–16 B | 0 B |
-| View size (String) | 24 B + heap | 0–16 B | 0 B |
-| Per-frame allocation | Clone data | 0 | 0 |
-| Raw comparison (12KB) | 442ms | 1.5ms (297×) | 1.5ms (297×) |
-| Auto dependency tracking | — | — | ✅ Memo\<T\> |
-| Async support | — | — | ✅ TaskScope |
-| Batch updates | — | — | ✅ batch() |
-
-"—" means the paradigm doesn't require it, not that it's "missing."
+- **Scope.** We modified only the change-detection layer inside `View::rebuild`. We did not touch the `View` trait, `ViewSequence`, or message routing. A full signal-based UI framework would differ more fundamentally.
+- **Memoize is evolving.** Xilem's docs note: *"The story of Memoization in Xilem is still being worked out, so the details of this view might change."* This is a snapshot against 0.4.0.
+- **`Arc<impl View>` comparison is at the micro level.** We measured `Arc::ptr_eq` directly but did not implement a full head-to-head benchmark exercising the manual-caching pattern inside `app_logic`.
+- **Microbenchmarks, not applications.** Rendering and layout dominate real GUI frame times. The architectural differences matter more than the nanosecond-level comparison costs.
+- **Single-threaded.** Auralis signals are `!Send + !Sync`. Production multi-window or SSR use would need multi-threaded variants.
 
 ---
 
-## What This Is Not
-
-- **Not a critique of Xilem's design.** Polling reconciliation is a perfectly valid approach for GUI applications. Rendering dominates frame time, and PartialEq on typical UI data (integers, short strings) is essentially free.
-- **Not a PR or improvement proposal.** This is an experiment in swapping reactive primitives. The results are shared as a data point, not a prescription.
-- **Not about "winning."** The value is in understanding how different reactive models shape engineering decisions — what becomes possible, what becomes necessary, what becomes irrelevant.
-
----
-
-## Limitations of This Experiment
-
-- **Scope.** We replaced only the `memoize`/`Frozen` layer — the change-detection mechanism inside `View::rebuild`. We did not attempt to replace the `View` trait itself, the `ViewSequence` infrastructure, or the message routing system. A full signal-based UI framework would look quite different from Xilem, and this experiment doesn't explore that.
-
-- **Memoize is evolving.** Xilem's own documentation notes: *"The story of Memoization in Xilem is still being worked out, so the details of this view might change."* Our comparison is against the current implementation (Xilem 0.4.0), not against any future design direction. The Xilem team may already be considering approaches that address some of the tradeoffs discussed here.
-
-- **Microbenchmarks, not applications.** The performance data comes from isolated rebuild loops. In a real application, widget rendering, layout, and GPU work dominate frame time. The comparison cost difference is real but may not be the primary factor in most GUI scenarios. The architectural differences (no `PartialEq`, zero per-frame allocation) are likely more impactful than the raw numbers.
-
-- **Single-threaded assumption.** Auralis signals are intentionally single-threaded (`!Send + !Sync`). This experiment works because Xilem's `State` has no threading constraint, but a production integration might need multi-threaded signal variants (e.g., `Arc<Mutex<>>`-backed) for use cases like multi-window or SSR isolation.
-
-- **No long-running application data.** We tested frame-level rebuild behavior, not application-level concerns like startup time, hot-reload compatibility, or memory usage over hours of runtime. These matter for real-world adoption.
-
-- **Type erasure cost.** Our 1000-label experiment used `.boxed()` for type erasure (to produce homogeneous `Vec` types). This adds a layer of dynamic dispatch not present in typical Xilem usage patterns. The impact is small but not zero.
-
----
-
-## Reproducing
+## 9. Reproducing
 
 ```bash
-git clone https://github.com/linebender/xilem.git
-# Copy xilem_core_auralis/ into the xilem workspace
+git clone https://github.com/chh-itt/xilem.git
+cd xilem
+git checkout auralis-experiment
 
-# Comparison benchmarks
-cargo run --example bench -p xilem_core_auralis --release
-cargo run --example bench_memory -p xilem_core_auralis --release
-
-# GUI demo
-cargo run --example live_comparison -p xilem_core_auralis --release
-
-# Tests
-cargo test -p xilem_core_auralis   # 8 passed
-cargo test -p xilem_core            # 52 passed (nothing broken)
+cargo run --example bench -p xilem_core_auralis --release        # PartialEq vs version
+cargo run --example bench_arc -p xilem_core_auralis --release     # Arc vs Signal vs PartialEq
+cargo run --example bench_memory -p xilem_core_auralis --release  # Memory footprint
+cargo run --example live_comparison -p xilem_core_auralis --release  # GUI demo
 ```
 
 ---
 
-## What I'd Love Feedback On
+## 10. Open Questions
 
-- Are there other dimensions worth measuring? (binary size, incremental rebuild, `virtual_scroll` integration)
-- Has anyone else experimented with push-based reactivity in Xilem or similar GUI frameworks?
-- What tradeoffs matter most to you when choosing a reactive model for GUI applications?
-- The `WidgetView` trait's `Send + Sync` requirement was one of the more interesting constraints we ran into. We worked around it, but we'd love to hear if there are use cases where relaxing this constraint might open up new design possibilities.
+- Is `Arc<impl View>` + manual caching the intended primary path for O(1) memoization, or is automated dependency tracking on the roadmap?
+- Has anyone explored subscription-based approaches within Xilem's event-driven model?
+- The `WidgetView::Send + Sync` constraint — we found a clean workaround, but we're curious: are there other situations where this constraint shapes design in interesting ways?
+- Other dimensions worth measuring?
