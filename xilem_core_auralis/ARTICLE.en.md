@@ -104,24 +104,31 @@ For small `Copy` types like `i32`, all three strategies are equivalent — `Part
 
 ---
 
-## 4. The "Smaller" Side of the Story
+## 4. The Honest Numbers
 
-Code size, dependencies, and compile time — the engineering overhead of each reactive layer:
+It's tempting to compare line counts between `auralis-signal` and `xilem_core` and
+call it "smaller." That's apples to oranges — `xilem_core` provides the full View
+trait infrastructure (ViewSequence, Element, MessageCtx, AnyView, one_of, etc.)
+that Auralis *reuses* via dependency. We're comparing a change-detection layer to
+an entire framework core.
 
-| | auralis-signal | xilem_core |
-|------|---------------|------------|
-| Implementation | **1,779 lines** | 5,467 lines |
-| Dependencies | **0** | 4 (6 transitive) |
-| Clean build | **0.30s** | 1.09s |
+The fair comparison is between the state-management layers:
 
-`auralis-signal` is 6 files. Zero dependencies means zero dependency conflicts, zero supply-chain surface, and instant compilation in any project.
+| | xilem_core state layer | Auralis state layer |
+|------|------|------|
+| What it does | `memoize`, `lens`, `map_state`, `map_message`, `impl_rc` | `Signal<T>`, `Memo<T>`, `batch`,
+| | | `signal_state_memoize`, `effect_view`, etc. |
+| Lines | **~900** | ~1,100 (adapters) + ~2,400 (kernel) = **~3,500** |
+| Dependencies | 0 (in-tree) | 0 (auralis-signal has zero deps) |
+| no_std | Yes | No (needs Rc/RefCell) |
 
-```
-auralis-signal:            xilem_core:
-    (nothing)                  ├── anymore
-                               ├── hashbrown → foldhash
-                               └── tracing  → tracing-core → pin-project-lite
-```
+Auralis is *more* code, not less. The trade is: you get automatic partial-eq-free
+version tracking, cross-component signal sharing via `.clone()`, and runtime
+diagnostics — at the cost of more infrastructure and a `std` requirement.
+
+The zero-dependency property of `auralis-signal` is real — it's a single crate
+with no external deps — but it doesn't make the *system* lighter. It makes it
+self-contained, which helps with supply-chain hygiene and portability.
 
 ---
 
@@ -163,6 +170,7 @@ cargo test -p xilem_core_auralis  # 8 passed
 ## 8. Limitations
 
 - **Scope.** We modified only the change-detection layer inside `View::rebuild`. We did not touch the `View` trait, `ViewSequence`, or message routing. A full signal-based UI framework would differ more fundamentally.
+- **Adapter cost.** `Signal<T>` is `!Send + !Sync`, but `WidgetView` requires `Send + Sync`. The workaround — fn pointers extracting signals from `&State` — adds a two-closure syntax at every call site. For simple components, `memoize` is shorter and more direct.
 - **Memoize is evolving.** Xilem's docs note: *"The story of Memoization in Xilem is still being worked out, so the details of this view might change."* This is a snapshot against 0.4.0.
 - **`Arc<impl View>` comparison is at the micro level.** We measured `Arc::ptr_eq` directly but did not implement a full head-to-head benchmark exercising the manual-caching pattern inside `app_logic`.
 - **Microbenchmarks, not applications.** Rendering and layout dominate real GUI frame times. The architectural differences matter more than the nanosecond-level comparison costs.
@@ -177,10 +185,11 @@ git clone https://github.com/chh-itt/xilem.git
 cd xilem
 git checkout auralis-experiment
 
-cargo run --example bench -p xilem_core_auralis --release        # PartialEq vs version
-cargo run --example bench_arc -p xilem_core_auralis --release     # Arc vs Signal vs PartialEq
-cargo run --example bench_memory -p xilem_core_auralis --release  # Memory footprint
-cargo run --example live_comparison -p xilem_core_auralis --release  # GUI demo
+cargo run --example bench -p xilem_core_auralis --release
+cargo run --example bench_arc -p xilem_core_auralis --release
+cargo run --example bench_memory -p xilem_core_auralis --release
+cargo run --example live_comparison -p xilem_core_auralis --release
+cargo run --example todomvc_auralis -p xilem_core_auralis       # Signal-driven components + DevTools
 ```
 
 ---
