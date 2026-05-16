@@ -118,9 +118,11 @@ The fair comparison is between the state-management layers:
 |------|------|------|
 | What it does | `memoize`, `lens`, `map_state`, `map_message`, `impl_rc` | `Signal<T>`, `Memo<T>`, `batch`,
 | | | `signal_state_memoize`, `effect_view`, etc. |
-| Lines | **~900** | ~1,100 (adapters) + ~2,400 (kernel) = **~3,500** |
+| Lines (pure code) | **675** | 720 (adapters) + 1,296 (kernel) = **2,016** |
 | Dependencies | 0 (in-tree) | 0 (auralis-signal has zero deps) |
 | no_std | Yes | No (needs Rc/RefCell) |
+
+Line counts via `tokei` — Rust code only, no comments, no blanks, no tests.
 
 Auralis is *more* code, not less. The trade is: you get automatic partial-eq-free
 version tracking, cross-component signal sharing via `.clone()`, and runtime

@@ -45,16 +45,18 @@ It provides an *alternative* change-detection layer.
 
 | Layer | xilem_core | auralis |
 |---|---|---|
-| Framework infrastructure (View trait, etc.) | ~3,000 lines | reuses xilem_core |
-| State management layer (memoize + lens + …) | **904 lines** | — |
-| Signal adapter layer (5 View adapters) | — | **1,061 lines** |
-| Reactive kernel (Signal, Memo, batch, …) | — | **2,424 lines** (excl. tests) |
-| **State management total** | **904 lines** | **3,485 lines** |
+| Framework infrastructure (View trait, etc.) | 3,796 lines | reuses xilem_core |
+| State management layer (memoize + lens + …) | **675 lines** (pure code) | — |
+| Signal adapter layer (5 View adapters) | — | **720 lines** (pure code) |
+| Reactive kernel (Signal, Memo, batch, …) | — | **1,296 lines** (pure code) |
+| **State management total** | **675 lines** | **2,016 lines** |
+
+Line counts are pure Rust code (no comments, no blanks, no tests) via `tokei`.
 
 **The "3× smaller" claim from the earlier experiment is retracted.**  It only
-measured the narrow case of replacing `memoize` without counting the Auralis
-kernel itself.  Auralis is more code — this is an upgrade path, not a
-lightweight replacement.
+measured replacing `memoize` without counting the Auralis kernel itself.
+Auralis is ~3× *more* code for the same functional scope — this is an upgrade
+path with additional capabilities, not a lightweight replacement.
 
 ## Writing components
 
@@ -119,7 +121,7 @@ No lens, no message wiring.
 | | xilem_core | auralis |
 |---|---|---|
 | Simple components | **shorter, more natural** | two-closure overhead |
-| Code size | **904 lines** | 3,485 lines |
+| Code size | **675 lines** | 2,016 lines |
 | Maintenance complexity | **lower** (single crate, no_std) | higher (multi-crate, std) |
 | No `PartialEq` bound | ❌ | ✅ |
 | Cross-context state sharing | limited to `&mut State` | `Signal::clone()` works anywhere |
