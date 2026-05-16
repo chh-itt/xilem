@@ -8,6 +8,9 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 xilem_core.workspace = true
 auralis-signal = { path = "../../auralis/crates/auralis-signal" }
+auralis-task = { path = "../../auralis/crates/auralis-task", features = ["debug"] }
+auralis-devtools = { path = "../../auralis/crates/auralis-devtools" }
+serde_json = "1"
 
 [dev-dependencies]
 xilem = { path = "../xilem" }
@@ -27,6 +30,9 @@ name = "bench_arc"
 
 [[example]]
 name = "bench_memory"
+
+[[example]]
+name = "todomvc_auralis"
 
 [lints]
 workspace = true

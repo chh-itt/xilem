@@ -31,17 +31,19 @@
 //! })
 //! ```
 
-mod signal_memoize;
-mod watch_signal;
 mod effect_view;
-mod state_memoize;
+mod signal_memoize;
+pub mod signal_scope;
 mod signal_state_memoize;
+mod state_memoize;
+mod watch_signal;
 
-pub use signal_memoize::{signal_memoize, SignalMemoize};
-pub use watch_signal::{watch_signal, WatchSignal};
 pub use effect_view::{effect_view, EffectView};
-pub use state_memoize::{state_memoize, StateMemoize};
+pub use signal_memoize::{signal_memoize, SignalMemoize};
+pub use signal_scope::SignalScope;
 pub use signal_state_memoize::{signal_state_memoize, SignalStateMemoize};
+pub use state_memoize::{state_memoize, StateMemoize};
+pub use watch_signal::{watch_signal, WatchSignal};
 
 // Re-export xilem_core traits for convenience
 pub use xilem_core::{
